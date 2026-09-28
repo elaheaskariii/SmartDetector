@@ -15,7 +15,8 @@ TIME_WINDOW = 20
 MAX_TURNS = 5
 SIMILARITY_THRESHOLD = 0.35
 
-TURN_RATIO_THRESHOLD = 0.08
+# ⭐️ آستانه‌ی چرخش سر (کمتر = حساس‌تر)
+TURN_RATIO_THRESHOLD = 0.05
 
 PROCESS_WIDTH = 480
 FACE_CHECK_EVERY = 8
@@ -91,9 +92,14 @@ alarm_thread = None
 # توابع
 # ============================================================
 def get_head_direction(landmarks, width):
+    """
+    خروجی: ("RIGHT"/"LEFT"/"CENTER", ratio)
+    تصویر قبل از این تابع با cv2.flip آینه‌ای شده،
+    پس «راست خودت» = «راست تصویر» = ratio مثبت.
+    """
     nose = landmarks[1]
-    left_face = landmarks[234]
-    right_face = landmarks[454]
+    left_face = landmarks[127] # نقطه‌ی پایدار نزدیک گوش چپ
+    right_face = landmarks[356] # نقطه‌ی پایدار نزدیک گوش راست
 
     nose_x = nose.x * width
     left_x = left_face.x * width
@@ -102,15 +108,16 @@ def get_head_direction(landmarks, width):
     face_center = (left_x + right_x) / 2
     face_width = abs(right_x - left_x)
 
-    if face_width == 0:
-        return "CENTER"
+    if face_width < 1e-6:
+        return "CENTER", 0.0
 
     ratio = (nose_x - face_center) / face_width
+
     if ratio > TURN_RATIO_THRESHOLD:
-        return "RIGHT"
+        return "RIGHT", ratio
     elif ratio < -TURN_RATIO_THRESHOLD:
-        return "LEFT"
-    return "CENTER"
+        return "LEFT", ratio
+    return "CENTER", ratio
 
 
 def get_face_center_from_landmarks(landmarks, w, h):
@@ -120,10 +127,9 @@ def get_face_center_from_landmarks(landmarks, w, h):
 
 
 def play_alarm_repeating(stop_event):
-    """صدای هشدار (جیغ) رو تا وقتی stop_event ست نشده تکرار می‌کنه"""
+    """جیغ تیز و سریع تا وقتی stop_event ست بشه"""
     while not stop_event.is_set():
         try:
-            # جیغ: پرش‌های فرکانسی تیز و سریع
             winsound.Beep(2000, 80)
             if stop_event.is_set():
                 break
@@ -143,7 +149,7 @@ def play_alarm_repeating(stop_event):
 
 
 def start_alarm():
-    """شروع پخش صدای هشدار در نخ جدا"""
+    """شروع پخش صدا در نخ جدا"""
     global alarm_thread
     alarm_stop_event.clear()
     alarm_thread = threading.Thread(
@@ -162,6 +168,9 @@ while True:
     if not ret:
         print("Frame read error")
         break
+
+    # ⭐️⭐️⭐️ آینه‌ای کردن تصویر (حس دوربین سلفی) ⭐️⭐️⭐️
+    frame = cv2.flip(frame, 1)
 
     h, w = frame.shape[:2]
     if w > PROCESS_WIDTH:
@@ -207,6 +216,7 @@ while True:
 
     # ---- تشخیص جهت سر ----
     current_direction = "NO FACE"
+    ratio_val = 0.0
 
     if mp_result and mp_result.multi_face_landmarks and identity_verified:
         my_landmarks = None
@@ -232,7 +242,7 @@ while True:
                     my_landmarks = face_lms.landmark
 
         if my_landmarks is not None:
-            current_direction = get_head_direction(my_landmarks, w)
+            current_direction, ratio_val = get_head_direction(my_landmarks, w)
 
     # ---- شروع پنجره ----
     if identity_verified and window_start is None and not alert_locked:
@@ -250,9 +260,9 @@ while True:
             if not turn_detected:
                 turn_detected = True
                 turn_count += 1
-                print("Turn:", current_direction, "| count:", turn_count)
+                print(f"Turn: {current_direction} | count: {turn_count} | ratio={ratio_val:+.3f}")
 
-                # ⭐️⭐️⭐️ تغییر اصلی: لحظه‌ی رسیدن به ۵ حرکت ⭐️⭐️⭐️
+                # ⭐️ لحظه‌ی رسیدن به ۵ حرکت: قفل + قرمز + جیغ
                 if turn_count >= MAX_TURNS:
                     alert_locked = True
                     print(">>> ALERT! Reached 5 turns. Press R to reset. <<<")
@@ -274,8 +284,6 @@ while True:
         if elapsed >= TIME_WINDOW:
             print("--- Window finished ---")
             print("Turns in this window:", turn_count)
-
-            # ⭐️⭐️⭐️ اگر به ۵ نرسید، فقط ریست می‌شه (بدون هشدار) ⭐️⭐️⭐️
             print("Normal. Starting new 20s window.")
             turn_count = 0
             turn_detected = False
@@ -285,7 +293,7 @@ while True:
     # رسم روی تصویر
     # ============================================================
     overlay = frame.copy()
-    cv2.rectangle(overlay, (5, 5), (300, 140), (0, 0, 0), -1)
+    cv2.rectangle(overlay, (5, 5), (320, 140), (0, 0, 0), -1)
     frame = cv2.addWeighted(overlay, 0.45, frame, 0.55, 0)
 
     if identity_verified:
@@ -304,21 +312,24 @@ while True:
     cv2.putText(frame, f"Time: {remaining:.1f}s", (15, 120),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
 
-    # ⭐️⭐️⭐️ حالت هشدار: کل تصویر قرمز می‌شه + متن WARNING ⭐️⭐️⭐️
+    # ⭐️ نمایش زنده‌ی جهت سر + ratio (برای دیباگ)
+    dir_color = (0, 255, 0) if current_direction == "CENTER" else (0, 165, 255)
+    cv2.putText(frame, f"Head: {current_direction} ({ratio_val:+.2f})",
+                (15, 165), cv2.FONT_HERSHEY_SIMPLEX, 0.55, dir_color, 2)
+
+    # ⭐️ حالت هشدار: کل تصویر قرمز + چشمک + متن
     if alert_locked:
-        # قرمز کردن کل تصویر
         red_overlay = np.zeros_like(frame)
-        red_overlay[:, :, 2] = 255 # کانال R
+        red_overlay[:, :, 2] = 255
         frame = cv2.addWeighted(red_overlay, 0.35, frame, 0.65, 0)
 
-        # دایره‌ی چشمک‌زن قرمز
         blink = int(time.perf_counter() * 4) % 2
         circle_color = (0, 0, 255) if blink == 0 else (0, 0, 180)
         cv2.circle(frame, (w - 45, 45), 25, circle_color, -1)
 
-        cv2.putText(frame, "WARNING!", (w - 230, 110),
+        cv2.putText(frame, "WARNING!", (w - 240, 110),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 3)
-        cv2.putText(frame, "STOP MOVING", (w - 230, 145),
+        cv2.putText(frame, "STOP MOVING", (w - 240, 145),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
     else:
         cv2.circle(frame, (w - 45, 45), 22, (80, 80, 80), -1)
@@ -357,7 +368,7 @@ while True:
         turn_count = 0
         turn_detected = False
         window_start = None
-        alarm_stop_event.set() # صدا رو قطع کن
+        alarm_stop_event.set()
         print("Reset. Waiting for your face to start a new 20s window.")
 
 # ============================================================
