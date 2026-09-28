@@ -12,10 +12,10 @@ REFERENCE_IMAGE = r"C:\Users\pars\Downloads\Eitaa Desktop\me.jpg"
 # ============================================================
 
 TIME_WINDOW = 20
-MAX_TURNS = 5
+MAX_TURNS = 5 # آستانه‌ی هشدار قرمز + بوق
+YELLOW_TURNS = 3 # آستانه‌ی چراغ زرد
 SIMILARITY_THRESHOLD = 0.35
 
-# ⭐️ آستانه‌ی چرخش سر (کمتر = حساس‌تر)
 TURN_RATIO_THRESHOLD = 0.05
 
 PROCESS_WIDTH = 480
@@ -71,7 +71,7 @@ print("Camera started. Q=quit S=pause R=reset")
 # متغیرها
 # ============================================================
 turn_count = 0
-turn_detected = False
+last_turn_direction = None # ⭐️ آخرین جهتی که شمرده شده (RIGHT/LEFT/None)
 window_start = None
 
 frame_counter = 0
@@ -92,14 +92,9 @@ alarm_thread = None
 # توابع
 # ============================================================
 def get_head_direction(landmarks, width):
-    """
-    خروجی: ("RIGHT"/"LEFT"/"CENTER", ratio)
-    تصویر قبل از این تابع با cv2.flip آینه‌ای شده،
-    پس «راست خودت» = «راست تصویر» = ratio مثبت.
-    """
     nose = landmarks[1]
-    left_face = landmarks[127] # نقطه‌ی پایدار نزدیک گوش چپ
-    right_face = landmarks[356] # نقطه‌ی پایدار نزدیک گوش راست
+    left_face = landmarks[127]
+    right_face = landmarks[356]
 
     nose_x = nose.x * width
     left_x = left_face.x * width
@@ -127,7 +122,7 @@ def get_face_center_from_landmarks(landmarks, w, h):
 
 
 def play_alarm_repeating(stop_event):
-    """جیغ تیز و سریع تا وقتی stop_event ست بشه"""
+    """بوق تیز و سریع تا وقتی stop_event ست بشه"""
     while not stop_event.is_set():
         try:
             winsound.Beep(2000, 80)
@@ -149,7 +144,6 @@ def play_alarm_repeating(stop_event):
 
 
 def start_alarm():
-    """شروع پخش صدا در نخ جدا"""
     global alarm_thread
     alarm_stop_event.clear()
     alarm_thread = threading.Thread(
@@ -169,7 +163,7 @@ while True:
         print("Frame read error")
         break
 
-    # ⭐️⭐️⭐️ آینه‌ای کردن تصویر (حس دوربین سلفی) ⭐️⭐️⭐️
+    # آینه‌ای کردن تصویر (حس دوربین سلفی)
     frame = cv2.flip(frame, 1)
 
     h, w = frame.shape[:2]
@@ -248,7 +242,7 @@ while True:
     if identity_verified and window_start is None and not alert_locked:
         window_start = time.perf_counter()
         turn_count = 0
-        turn_detected = False
+        last_turn_direction = None
         print(">>> Window started (20s).")
 
     # ---- شمارش چرخش ----
@@ -257,18 +251,24 @@ while True:
             and not alert_locked):
 
         if current_direction in ("LEFT", "RIGHT"):
-            if not turn_detected:
-                turn_detected = True
+            # ⭐️⭐️⭐️ منطق اصلاح‌شده ⭐️⭐️⭐️
+            # اگه جهت با آخرین جهت شمرده‌شده فرق داشته باشه، حرکت جدید شمرده می‌شه.
+            # این باعث می‌شه «راست-چپ-راست» یا «راست-راست» (اگه وسط CENTER نری)
+            # هم درست شمرده بشن — به شرط برگشتن به CENTER بین دو حرکت یکسان.
+            if current_direction != last_turn_direction:
+                last_turn_direction = current_direction
                 turn_count += 1
                 print(f"Turn: {current_direction} | count: {turn_count} | ratio={ratio_val:+.3f}")
 
-                # ⭐️ لحظه‌ی رسیدن به ۵ حرکت: قفل + قرمز + جیغ
+                # ⭐️ هشدار قرمز + بوق در لحظه‌ی رسیدن به ۵
                 if turn_count >= MAX_TURNS:
                     alert_locked = True
                     print(">>> ALERT! Reached 5 turns. Press R to reset. <<<")
                     start_alarm()
+
         elif current_direction == "CENTER":
-            turn_detected = False
+            # وقتی سرت برمی‌گرده وسط، اجازه بده حرکت بعدی (حتی هم‌جهت) شمرده بشه
+            last_turn_direction = None
 
     # ---- تایمر پنجره ----
     now = time.perf_counter()
@@ -286,7 +286,7 @@ while True:
             print("Turns in this window:", turn_count)
             print("Normal. Starting new 20s window.")
             turn_count = 0
-            turn_detected = False
+            last_turn_direction = None
             window_start = now
 
     # ============================================================
@@ -312,27 +312,42 @@ while True:
     cv2.putText(frame, f"Time: {remaining:.1f}s", (15, 120),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
 
-    # ⭐️ نمایش زنده‌ی جهت سر + ratio (برای دیباگ)
     dir_color = (0, 255, 0) if current_direction == "CENTER" else (0, 165, 255)
     cv2.putText(frame, f"Head: {current_direction} ({ratio_val:+.2f})",
                 (15, 165), cv2.FONT_HERSHEY_SIMPLEX, 0.55, dir_color, 2)
 
-    # ⭐️ حالت هشدار: کل تصویر قرمز + چشمک + متن
+    # ⭐️⭐️⭐️ چراغ‌های وضعیت گوشه‌ی بالا-راست ⭐️⭐️⭐️
+    # چراغ سبز = عادی، زرد = به ۳ رسید، قرمز = به ۵ رسید
+    light_x, light_y = w - 45, 45
+    light_r = 25
+
     if alert_locked:
+        # قرمز چشمک‌زن
+        blink = int(time.perf_counter() * 5) % 2
+        circle_color = (0, 0, 255) if blink == 0 else (0, 0, 150)
+        cv2.circle(frame, (light_x, light_y), light_r, circle_color, -1)
+        cv2.circle(frame, (light_x, light_y), light_r, (255, 255, 255), 2)
+
+        # لایه‌ی قرمز روی کل تصویر
         red_overlay = np.zeros_like(frame)
         red_overlay[:, :, 2] = 255
         frame = cv2.addWeighted(red_overlay, 0.35, frame, 0.65, 0)
-
-        blink = int(time.perf_counter() * 4) % 2
-        circle_color = (0, 0, 255) if blink == 0 else (0, 0, 180)
-        cv2.circle(frame, (w - 45, 45), 25, circle_color, -1)
 
         cv2.putText(frame, "WARNING!", (w - 240, 110),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 3)
         cv2.putText(frame, "STOP MOVING", (w - 240, 145),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+    elif turn_count >= YELLOW_TURNS:
+        # ⭐️ چراغ زرد (بدون صدا)
+        cv2.circle(frame, (light_x, light_y), light_r, (0, 215, 255), -1)
+        cv2.circle(frame, (light_x, light_y), light_r, (255, 255, 255), 2)
+        cv2.putText(frame, "CAUTION", (w - 200, 100),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 215, 255), 2)
+
     else:
-        cv2.circle(frame, (w - 45, 45), 22, (80, 80, 80), -1)
+        # چراغ خاکستری (خاموش)
+        cv2.circle(frame, (light_x, light_y), light_r, (80, 80, 80), -1)
 
     cv2.imshow("Smart Detector", frame)
 
@@ -353,7 +368,7 @@ while True:
                 if identity_verified and not alert_locked:
                     window_start = time.perf_counter()
                     turn_count = 0
-                    turn_detected = False
+                    last_turn_direction = None
                 break
             elif k2 in (ord('q'), ord('Q'), 27):
                 alarm_stop_event.set()
@@ -366,7 +381,7 @@ while True:
     elif key in (ord('r'), ord('R')):
         alert_locked = False
         turn_count = 0
-        turn_detected = False
+        last_turn_direction = None
         window_start = None
         alarm_stop_event.set()
         print("Reset. Waiting for your face to start a new 20s window.")
@@ -377,4 +392,3 @@ cv2.destroyAllWindows()
 face_mesh.close()
 alarm_stop_event.set()
 print("Stopped.")
-#=====================================
