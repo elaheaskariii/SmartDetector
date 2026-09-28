@@ -120,19 +120,38 @@ def get_face_center_from_landmarks(landmarks, w, h):
 
 
 def play_alarm_repeating(stop_event):
-    """صدای هشدار رو تا وقتی stop_event ست نشده تکرار می‌کنه"""
+    """صدای هشدار (جیغ) رو تا وقتی stop_event ست نشده تکرار می‌کنه"""
     while not stop_event.is_set():
         try:
-            winsound.Beep(1000, 200)
+            # جیغ: پرش‌های فرکانسی تیز و سریع
+            winsound.Beep(2000, 80)
             if stop_event.is_set():
                 break
-            winsound.Beep(1500, 200)
+            winsound.Beep(2500, 80)
             if stop_event.is_set():
                 break
-            winsound.Beep(1000, 300)
+            winsound.Beep(2000, 80)
+            if stop_event.is_set():
+                break
+            winsound.Beep(2800, 120)
+            if stop_event.is_set():
+                break
+            winsound.Beep(2200, 100)
         except Exception as e:
             print("Sound error:", e)
             break
+
+
+def start_alarm():
+    """شروع پخش صدای هشدار در نخ جدا"""
+    global alarm_thread
+    alarm_stop_event.clear()
+    alarm_thread = threading.Thread(
+        target=play_alarm_repeating,
+        args=(alarm_stop_event,),
+        daemon=True
+    )
+    alarm_thread.start()
 
 
 # ============================================================
@@ -232,6 +251,12 @@ while True:
                 turn_detected = True
                 turn_count += 1
                 print("Turn:", current_direction, "| count:", turn_count)
+
+                # ⭐️⭐️⭐️ تغییر اصلی: لحظه‌ی رسیدن به ۵ حرکت ⭐️⭐️⭐️
+                if turn_count >= MAX_TURNS:
+                    alert_locked = True
+                    print(">>> ALERT! Reached 5 turns. Press R to reset. <<<")
+                    start_alarm()
         elif current_direction == "CENTER":
             turn_detected = False
 
@@ -250,22 +275,8 @@ while True:
             print("--- Window finished ---")
             print("Turns in this window:", turn_count)
 
-            if turn_count >= MAX_TURNS:
-                alert_locked = True
-                print(">>> WARNING LOCKED. Press R to reset. <<<")
-
-                # پخش صدا توی نخ جدا
-                alarm_stop_event.clear()
-                alarm_thread = threading.Thread(
-                    target=play_alarm_repeating,
-                    args=(alarm_stop_event,),
-                    daemon=True
-                )
-                alarm_thread.start()
-
-            else:
-                print("Normal. Starting new 20s window.")
-
+            # ⭐️⭐️⭐️ اگر به ۵ نرسید، فقط ریست می‌شه (بدون هشدار) ⭐️⭐️⭐️
+            print("Normal. Starting new 20s window.")
             turn_count = 0
             turn_detected = False
             window_start = now
@@ -293,9 +304,21 @@ while True:
     cv2.putText(frame, f"Time: {remaining:.1f}s", (15, 120),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 2)
 
+    # ⭐️⭐️⭐️ حالت هشدار: کل تصویر قرمز می‌شه + متن WARNING ⭐️⭐️⭐️
     if alert_locked:
-        cv2.circle(frame, (w - 45, 45), 22, (0, 0, 255), -1)
-        cv2.putText(frame, "WARNING!", (w - 190, 100),
+        # قرمز کردن کل تصویر
+        red_overlay = np.zeros_like(frame)
+        red_overlay[:, :, 2] = 255 # کانال R
+        frame = cv2.addWeighted(red_overlay, 0.35, frame, 0.65, 0)
+
+        # دایره‌ی چشمک‌زن قرمز
+        blink = int(time.perf_counter() * 4) % 2
+        circle_color = (0, 0, 255) if blink == 0 else (0, 0, 180)
+        cv2.circle(frame, (w - 45, 45), 25, circle_color, -1)
+
+        cv2.putText(frame, "WARNING!", (w - 230, 110),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 3)
+        cv2.putText(frame, "STOP MOVING", (w - 230, 145),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
     else:
         cv2.circle(frame, (w - 45, 45), 22, (80, 80, 80), -1)
