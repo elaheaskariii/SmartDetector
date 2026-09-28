@@ -377,4 +377,4 @@ cv2.destroyAllWindows()
 face_mesh.close()
 alarm_stop_event.set()
 print("Stopped.")
-#============================================================
+#=====================================
